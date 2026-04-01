@@ -70,3 +70,28 @@ For each order:
 For each item within an order:
 - Product name, article number, quantity, unit price, line total
 - Links to the product page and product image
+
+## Analyzing your orders
+
+There's a Jupyter notebook (`analysis.ipynb`) that visualizes your order history. It automatically picks up the most recent `orders-*.json` export file.
+
+To run it:
+
+```sh
+uv venv .venv
+uv pip install pandas matplotlib jupyter ipykernel nbstripout
+source .venv/bin/activate
+nbstripout --install
+jupyter notebook analysis.ipynb
+```
+
+The notebook includes:
+- Yearly summary table (total spent, number of orders, average order value)
+- Spending trend bar chart
+- Cumulative spending over time
+- Monthly spending heatmap (seasonal patterns)
+- Top 10 most expensive items per year
+
+## Limitations
+
+- Only works with the German Thomann website (`thomann.de/de/`). Price parsing assumes German number formatting (dot as thousands separator, comma as decimal separator).
