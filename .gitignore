@@ -33,6 +33,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 
+# Python virtual environment
+.venv
+
 credentials.ts
 
 # scraped output
@@ -43,3 +46,4 @@ orders.csv
 # saved HTML samples
 *.html
 *_files/
+/.ipynb_checkpoints/analysis-checkpoint.ipynb

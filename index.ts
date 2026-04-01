@@ -45,8 +45,9 @@ const CONFIG = {
 // --- Helpers ---
 
 function parsePrice(raw: string): number {
-  // "158,50 €" or "99 €" → number
-  const cleaned = raw.replace(/[€\s\u00a0]/g, '').replace(',', '.');
+  // German locale (dot = thousands, comma = decimal): "1.773,76 €" → 1773.76
+  // This assumes the /de/ locale on thomann.de — other locales would need different parsing.
+  const cleaned = raw.replace(/[€\s\u00a0]/g, '').replace(/\./g, '').replace(',', '.');
   return parseFloat(cleaned) || 0;
 }
 
