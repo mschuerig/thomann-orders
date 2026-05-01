@@ -75,15 +75,27 @@ For each item within an order:
 
 There's a Jupyter notebook (`analysis.ipynb`) that visualizes your order history. It automatically picks up the most recent `orders-*.json` export file.
 
-To run it:
+### One-time setup
 
 ```sh
 uv venv .venv
-uv pip install pandas matplotlib jupyter ipykernel nbstripout
 source .venv/bin/activate
+uv pip install pandas matplotlib jupyter ipykernel nbstripout
 nbstripout --install
+```
+
+`nbstripout --install` registers a git filter that strips notebook outputs on commit. This prevents your personal order data — which appears in cell outputs — from being committed, and as a side benefit keeps notebook diffs clean.
+
+### Running the notebook
+
+Activate the venv and launch Jupyter:
+
+```sh
+source .venv/bin/activate
 jupyter notebook analysis.ipynb
 ```
+
+If you use [direnv](https://direnv.net/), the venv activates automatically on `cd` into the project (run `direnv allow` once to trust the included `.envrc`).
 
 The notebook includes:
 - Yearly summary table (total spent, number of orders, average order value)
