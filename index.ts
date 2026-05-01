@@ -150,7 +150,8 @@ async function scrapeAllOrderSummaries(
   }
 
   // Scrape first page
-  allOrders.push(...await scrapeOrderListPage(page));
+  let pageOrders = await scrapeOrderListPage(page);
+  allOrders.push(...pageOrders);
   console.log(`  Page 1: ${allOrders.length} orders`);
 
   // Find total pages from pagination
@@ -159,8 +160,13 @@ async function scrapeAllOrderSummaries(
   const lastPageText = await lastPageLink.textContent().catch(() => null);
   const totalPages = lastPageText ? parseInt(lastPageText.trim(), 10) : 1;
 
-  // Scrape remaining pages, stop early if we have enough new orders
+  // Orders are listed newest-first, so once we see a previously-known order
+  // on a page, every later page contains only known orders too.
   for (let pg = 2; pg <= totalPages; pg++) {
+    if (pageOrders.some(o => knownOrderNumbers.has(o.orderNumber))) {
+      console.log(`  Reached previously-known orders, skipping remaining pages`);
+      break;
+    }
     if (newOrderCount() >= needed) {
       console.log(`  Collected enough new orders, skipping remaining pages`);
       break;
@@ -168,7 +174,7 @@ async function scrapeAllOrderSummaries(
     if (opts.slow) await randomDelay(1000, 3000);
     await page.goto(`${CONFIG.orderlistUrl}?pg=${pg}`);
     await page.locator('#order-list').waitFor();
-    const pageOrders = await scrapeOrderListPage(page);
+    pageOrders = await scrapeOrderListPage(page);
     allOrders.push(...pageOrders);
     console.log(`  Page ${pg}/${totalPages}: +${pageOrders.length} orders (total: ${allOrders.length})`);
   }
