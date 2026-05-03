@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Thomann order scraper — a Bun + Puppeteer script that logs into thomann.de, handles cookie consent, and navigates to the order list. Currently a single-file script (`index.ts`) in early development.
+Thomann order scraper — a Bun + Puppeteer script that logs into thomann.de, handles cookie consent, and navigates to the order list. Currently a single-file script (`thomann-orders.ts`) in early development.
 
 ## Commands
 
 - **Install dependencies:** `bun install`
-- **Run:** `bun run index.ts`
+- **Run:** `./thomann-orders.ts` (or `bun run thomann-orders.ts`)
 - **Type-check:** `bun run tsc --noEmit` (no build step; `noEmit` is set in tsconfig)
 
 ## Key Details

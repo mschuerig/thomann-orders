@@ -1,6 +1,7 @@
 {
   "name": "thomann-orders",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "module": "thomann-orders.ts",
   "devDependencies": {
     "@types/bun": "latest"
   },

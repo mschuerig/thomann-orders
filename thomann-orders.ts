@@ -1,6 +1,8 @@
+#!/usr/bin/env bun
 import { chromium, type Page } from 'playwright';
 import { readFile, writeFile } from 'fs/promises';
 import CREDENTIALS from './credentials';
+import pkg from './package.json' with { type: 'json' };
 
 // --- Types ---
 
@@ -262,6 +264,20 @@ async function scrapeOrderDetail(page: Page, summary: OrderSummary): Promise<Ord
 
 // --- CLI args ---
 
+const HELP = `Usage: thomann-orders [options]
+
+Export your Thomann order history to a timestamped JSON file. By default,
+runs incrementally — only fetches orders not present in the most recent
+existing export.
+
+Options:
+  --full         Re-export all orders, ignoring previous exports
+  --slow         Add random pauses between requests
+  --limit N      Only fetch the first N new orders
+  -h, --help     Show this help and exit
+  -v, --version  Show version and exit
+`;
+
 function parseArgs() {
   const args = process.argv.slice(2);
   let limit = Infinity;
@@ -269,10 +285,20 @@ function parseArgs() {
   let full = false;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--full') full = true;
+    if (args[i] === '--help' || args[i] === '-h') {
+      process.stdout.write(HELP);
+      process.exit(0);
+    } else if (args[i] === '--version' || args[i] === '-v') {
+      console.log(pkg.version);
+      process.exit(0);
+    } else if (args[i] === '--full') full = true;
     else if (args[i] === '--slow') slow = true;
     else if (args[i] === '--limit' && args[i + 1]) {
       limit = parseInt(args[++i]!, 10);
+    } else {
+      console.error(`Unknown option: ${args[i]}\n`);
+      process.stderr.write(HELP);
+      process.exit(2);
     }
   }
   return { full, slow, limit };

@@ -30,7 +30,7 @@ Since Thomann doesn't offer an API, this tool opens a browser window, logs into 
 Run the exporter:
 
 ```sh
-bun run index.ts
+./thomann-orders.ts
 ```
 
 A Chrome window will open, log into your Thomann account, and start collecting your orders. When it's done, you'll find a timestamped JSON file like `orders-20260331195030.json` in the project folder.
@@ -46,7 +46,7 @@ A Chrome window will open, log into your Thomann account, and start collecting y
 You can combine options:
 
 ```sh
-bun run index.ts --slow --limit 5
+./thomann-orders.ts --slow --limit 5
 ```
 
 Without `--full`, the exporter works **incrementally**: it finds the most recent export file and only fetches orders that aren't in it yet.
