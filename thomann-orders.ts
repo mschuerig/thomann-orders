@@ -29,6 +29,7 @@ interface Order {
   orderUrl: string;
   invoiceUrl: string | null;
   items: OrderItem[];
+  removed?: boolean;
 }
 
 interface ExportData {
@@ -57,6 +58,12 @@ function toIsoDate(dmy: string): string {
   // "17.02.2026" → "2026-02-17"
   const [d, m, y] = dmy.split('.');
   return `${y}-${m}-${d}`;
+}
+
+function monthsAgoIso(months: number): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  return d.toISOString().slice(0, 10);
 }
 
 async function findLatestExport(): Promise<string | null> {
@@ -142,13 +149,18 @@ async function scrapeOrderListPage(page: Page): Promise<OrderSummary[]> {
 async function scrapeAllOrderSummaries(
   page: Page,
   knownOrderNumbers: Set<string>,
-  opts: { slow: boolean; limit: number },
+  opts: { slow: boolean; limit: number; reconcileCutoffIso: string | null },
 ): Promise<OrderSummary[]> {
   const allOrders: OrderSummary[] = [];
   const needed = opts.limit;
+  const cutoff = opts.reconcileCutoffIso;
 
   function newOrderCount() {
     return allOrders.filter(o => !knownOrderNumbers.has(o.orderNumber)).length;
+  }
+  function pageInsideWindow(orders: OrderSummary[]): boolean {
+    if (cutoff === null) return false;
+    return orders.some(o => toIsoDate(o.date) >= cutoff);
   }
 
   // Scrape first page
@@ -162,16 +174,19 @@ async function scrapeAllOrderSummaries(
   const lastPageText = await lastPageLink.textContent().catch(() => null);
   const totalPages = lastPageText ? parseInt(lastPageText.trim(), 10) : 1;
 
-  // Orders are listed newest-first, so once we see a previously-known order
-  // on a page, every later page contains only known orders too.
+  // Orders are listed newest-first. Outside the reconcile window the existing
+  // short-circuits apply; inside the window we need every summary for drift
+  // comparison, so we keep paging regardless of known/limit.
   for (let pg = 2; pg <= totalPages; pg++) {
-    if (pageOrders.some(o => knownOrderNumbers.has(o.orderNumber))) {
-      console.log(`  Reached previously-known orders, skipping remaining pages`);
-      break;
-    }
-    if (newOrderCount() >= needed) {
-      console.log(`  Collected enough new orders, skipping remaining pages`);
-      break;
+    if (!pageInsideWindow(pageOrders)) {
+      if (pageOrders.some(o => knownOrderNumbers.has(o.orderNumber))) {
+        console.log(`  Reached previously-known orders, skipping remaining pages`);
+        break;
+      }
+      if (newOrderCount() >= needed) {
+        console.log(`  Collected enough new orders, skipping remaining pages`);
+        break;
+      }
     }
     if (opts.slow) await randomDelay(1000, 3000);
     await page.goto(`${CONFIG.orderlistUrl}?pg=${pg}`);
@@ -268,14 +283,19 @@ const HELP = `Usage: thomann-orders [options]
 
 Export your Thomann order history to a timestamped JSON file. By default,
 runs incrementally — only fetches orders not present in the most recent
-existing export.
+existing export — and reconciles orders within a 3-month window against
+the current listing to catch cancellations and item amendments.
 
 Options:
-  --full         Re-export all orders, ignoring previous exports
-  --slow         Add random pauses between requests
-  --limit N      Only fetch the first N new orders
-  -h, --help     Show this help and exit
-  -v, --version  Show version and exit
+  --full              Re-export all orders, ignoring previous exports
+  --slow              Add random pauses between requests
+  --limit N           Only fetch the first N new orders
+  --reconcile=N       Reconcile cached orders within the last N months
+                      against the listing (default: 3)
+  --no-reconcile      Skip reconciliation
+  --refresh=ORDERNO   Re-fetch a single order's details and exit
+  -h, --help          Show this help and exit
+  -v, --version       Show version and exit
 `;
 
 function parseArgs() {
@@ -283,25 +303,45 @@ function parseArgs() {
   let limit = Infinity;
   let slow = false;
   let full = false;
+  let reconcileMonths: number | null = 3;
+  let refresh: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--help' || args[i] === '-h') {
+    const arg = args[i]!;
+    if (arg === '--help' || arg === '-h') {
       process.stdout.write(HELP);
       process.exit(0);
-    } else if (args[i] === '--version' || args[i] === '-v') {
+    } else if (arg === '--version' || arg === '-v') {
       console.log(pkg.version);
       process.exit(0);
-    } else if (args[i] === '--full') full = true;
-    else if (args[i] === '--slow') slow = true;
-    else if (args[i] === '--limit' && args[i + 1]) {
+    } else if (arg === '--full') full = true;
+    else if (arg === '--slow') slow = true;
+    else if (arg === '--limit' && args[i + 1]) {
       limit = parseInt(args[++i]!, 10);
+    } else if (arg === '--no-reconcile') {
+      reconcileMonths = null;
+    } else if (arg.startsWith('--reconcile=')) {
+      const n = parseInt(arg.slice('--reconcile='.length), 10);
+      if (!Number.isFinite(n) || n < 0) {
+        console.error(`Invalid --reconcile value: ${arg}\n`);
+        process.exit(2);
+      }
+      reconcileMonths = n;
+    } else if (arg.startsWith('--refresh=')) {
+      refresh = arg.slice('--refresh='.length);
+      if (!refresh) {
+        console.error(`Invalid --refresh value: ${arg}\n`);
+        process.exit(2);
+      }
     } else {
-      console.error(`Unknown option: ${args[i]}\n`);
+      console.error(`Unknown option: ${arg}\n`);
       process.stderr.write(HELP);
       process.exit(2);
     }
   }
-  return { full, slow, limit };
+  // --full has no cache to reconcile against
+  if (full) reconcileMonths = null;
+  return { full, slow, limit, reconcileMonths, refresh };
 }
 
 function randomDelay(min: number, max: number): Promise<void> {
@@ -311,6 +351,53 @@ function randomDelay(min: number, max: number): Promise<void> {
 
 // --- Main ---
 
+async function findOrderInListing(page: Page, orderNumber: string): Promise<OrderSummary | null> {
+  await page.goto(CONFIG.orderlistUrl);
+  await page.locator('#order-list').waitFor();
+  let pageOrders = await scrapeOrderListPage(page);
+
+  const pageLinks = page.locator('.fx-pagination .fx-pagination__pages-button');
+  const lastPageText = await pageLinks.last().textContent().catch(() => null);
+  const totalPages = lastPageText ? parseInt(lastPageText.trim(), 10) : 1;
+
+  for (let pg = 1; pg <= totalPages; pg++) {
+    if (pg > 1) {
+      await page.goto(`${CONFIG.orderlistUrl}?pg=${pg}`);
+      await page.locator('#order-list').waitFor();
+      pageOrders = await scrapeOrderListPage(page);
+    }
+    const match = pageOrders.find(o => o.orderNumber === orderNumber);
+    if (match) return match;
+  }
+  return null;
+}
+
+async function refreshSingleOrder(
+  page: Page,
+  orderNumber: string,
+  cached: Order | undefined,
+): Promise<Order | null> {
+  const summary: OrderSummary | null = cached
+    ? {
+        orderNumber: cached.orderNumber,
+        date: cached.date,
+        totalSum: cached.totalSum,
+        status: cached.status,
+        detailUrl: cached.orderUrl,
+      }
+    : await findOrderInListing(page, orderNumber);
+
+  if (!summary) return null;
+
+  try {
+    return await scrapeOrderDetail(page, summary);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.log(`  Failed to fetch detail for ${orderNumber}: ${msg}`);
+    return null;
+  }
+}
+
 async function main() {
   const opts = parseArgs();
 
@@ -319,6 +406,13 @@ async function main() {
   const knownOrderNumbers = new Set(existing?.orders.map(o => o.orderNumber) ?? []);
   if (existing && !opts.full) {
     console.log(`Incremental mode: ${knownOrderNumbers.size} orders already scraped`);
+  }
+
+  const reconcileCutoffIso = existing && opts.reconcileMonths !== null
+    ? monthsAgoIso(opts.reconcileMonths)
+    : null;
+  if (reconcileCutoffIso) {
+    console.log(`Reconciling orders since ${reconcileCutoffIso}`);
   }
 
   const browser = await chromium.launch({
@@ -337,31 +431,109 @@ async function main() {
     // Ensure we're on the order list
     await page.locator('#order-list').waitFor({ timeout: 10000 });
 
-    // Step 1: Collect all order summaries
-    console.log('Scraping order list...');
-    const summaries = await scrapeAllOrderSummaries(page, knownOrderNumbers, opts);
-    console.log(`Found ${summaries.length} orders total`);
+    // --- Refresh single order and exit ---
+    if (opts.refresh) {
+      const cached = existing?.orders.find(o => o.orderNumber === opts.refresh);
+      const refreshed = await refreshSingleOrder(page, opts.refresh, cached);
 
-    // Filter out already-scraped orders, apply limit
-    let toScrape = summaries.filter(s => !knownOrderNumbers.has(s.orderNumber));
-    if (opts.limit < toScrape.length) {
-      toScrape = toScrape.slice(0, opts.limit);
+      const merged = new Map<string, Order>();
+      for (const o of existing?.orders ?? []) merged.set(o.orderNumber, o);
+
+      if (refreshed) {
+        merged.set(refreshed.orderNumber, refreshed);
+        console.log(`Refreshed order ${refreshed.orderNumber}`);
+      } else if (cached) {
+        merged.set(cached.orderNumber, { ...cached, removed: true });
+        console.log(`Marked order ${cached.orderNumber} as removed`);
+      } else {
+        console.log(`Order ${opts.refresh} not in cache or listing — nothing to save`);
+        return;
+      }
+
+      const allOrders = [...merged.values()].sort((a, b) => b.dateIso.localeCompare(a.dateIso));
+      const exportData: ExportData = {
+        exportDate: new Date().toISOString(),
+        orders: allOrders,
+      };
+      await save(exportData);
+      console.log(`Saved ${allOrders.length} orders to ${CONFIG.outputFile}`);
+      return;
     }
-    console.log(`${toScrape.length} orders to scrape`);
 
-    // Step 2: Scrape each order's details
-    const newOrders: Order[] = [];
-    for (let i = 0; i < toScrape.length; i++) {
-      const summary = toScrape[i]!;
-      console.log(`  [${i + 1}/${toScrape.length}] Order ${summary.orderNumber}...`);
+    // --- Step 1: Collect order summaries ---
+    console.log('Scraping order list...');
+    const summaries = await scrapeAllOrderSummaries(page, knownOrderNumbers, {
+      slow: opts.slow,
+      limit: opts.limit,
+      reconcileCutoffIso,
+    });
+    console.log(`Found ${summaries.length} orders in listing`);
+
+    const cachedByNumber = new Map<string, Order>();
+    for (const o of existing?.orders ?? []) cachedByNumber.set(o.orderNumber, o);
+    const summaryByNumber = new Map<string, OrderSummary>();
+    for (const s of summaries) summaryByNumber.set(s.orderNumber, s);
+
+    // --- Step 2: Classify summaries (new vs drift vs no-op) ---
+    const toScrapeAll: OrderSummary[] = [];
+    const toRefetch: OrderSummary[] = [];
+    for (const s of summaries) {
+      const cached = cachedByNumber.get(s.orderNumber);
+      if (!cached) {
+        toScrapeAll.push(s);
+        continue;
+      }
+      if (cached.removed) {
+        // Was marked removed but is back in the listing — refetch to clear the flag
+        toRefetch.push(s);
+        continue;
+      }
+      const inWindow = reconcileCutoffIso !== null && toIsoDate(s.date) >= reconcileCutoffIso;
+      if (inWindow && (cached.status !== s.status || cached.totalSum !== s.totalSum)) {
+        toRefetch.push(s);
+      }
+    }
+    const toScrape = opts.limit < toScrapeAll.length ? toScrapeAll.slice(0, opts.limit) : toScrapeAll;
+
+    // --- Step 3: Cached orders within the window missing from the listing ---
+    const nowRemoved: string[] = [];
+    if (reconcileCutoffIso !== null) {
+      for (const o of existing?.orders ?? []) {
+        if (o.dateIso >= reconcileCutoffIso && !summaryByNumber.has(o.orderNumber) && !o.removed) {
+          nowRemoved.push(o.orderNumber);
+        }
+      }
+    }
+
+    console.log(
+      `Reconciliation: ${toScrape.length} new, ${toRefetch.length} drift, ${nowRemoved.length} removed`,
+    );
+
+    // --- Step 4: Detail fetches for new + drifted orders ---
+    const detailFetches = [...toScrape, ...toRefetch];
+    const fetched: Order[] = [];
+    for (let i = 0; i < detailFetches.length; i++) {
+      const summary = detailFetches[i]!;
+      const tag = i < toScrape.length ? 'new' : 'drift';
+      console.log(`  [${i + 1}/${detailFetches.length}] (${tag}) Order ${summary.orderNumber}...`);
       const order = await scrapeOrderDetail(page, summary);
-      newOrders.push(order);
+      fetched.push(order);
       if (opts.slow) await randomDelay(1500, 4000);
     }
 
-    // Step 3: Merge and save
-    const allOrders = [...(existing?.orders ?? []), ...newOrders];
-    allOrders.sort((a, b) => b.dateIso.localeCompare(a.dateIso)); // newest first
+    // --- Step 5: Merge and save ---
+    const merged = new Map<string, Order>();
+    for (const o of existing?.orders ?? []) merged.set(o.orderNumber, o);
+    for (const o of fetched) merged.set(o.orderNumber, o);
+    for (const orderNumber of nowRemoved) {
+      const cur = merged.get(orderNumber);
+      if (cur) {
+        merged.set(orderNumber, { ...cur, removed: true });
+        console.log(`  Marked removed: ${orderNumber}`);
+      }
+    }
+
+    const allOrders = [...merged.values()].sort((a, b) => b.dateIso.localeCompare(a.dateIso));
 
     const exportData: ExportData = {
       exportDate: new Date().toISOString(),

@@ -8,7 +8,7 @@ fi
 
 jq -r '
   ["orderNumber","orderType","date","status","totalSum","itemName","articleNumber","count","unitPrice","lineTotal","productUrl","imageUrl","orderUrl","invoiceUrl"],
-  (.orders[] | . as $o | .items[] |
+  (.orders[] | select(.removed != true) | . as $o | .items[] |
     [$o.orderNumber, $o.orderType, $o.dateIso, $o.status, $o.totalSumNum,
      .name, .articleNumber, .count, .unitPriceNum, .lineTotalNum,
      .productUrl, .imageUrl, $o.orderUrl, ($o.invoiceUrl // "")]
